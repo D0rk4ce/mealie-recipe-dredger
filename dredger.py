@@ -1,34 +1,33 @@
 import requests
 import time
 import json
-from bs4 import BeautifulSoup
 import os
+import subprocess
+from bs4 import BeautifulSoup
+from langdetect import detect, DetectorFactory
 
 # --- CONFIGURATION ---
-# The script checks for Environment Variables (Docker) first. 
-# If not found, it defaults to the values on the right.
-
-def str_to_bool(v):
-    return str(v).lower() in ("yes", "true", "t", "1")
+# Uses Environment Variables for Docker (Standardized)
 
 # Mealie Settings
-# This logic defaults to True if the variable is missing.
-# If the user sets it to "False", "No", or anything else, it becomes False.
-MEALIE_ENABLED = os.getenv('MEALIE_ENABLED', 'True').lower() == 'true'
-MEALIE_URL = os.getenv('MEALIE_URL', 'http://192.168.1.100:9000')
-MEALIE_API_TOKEN = os.getenv('MEALIE_API_TOKEN', 'your_mealie_token_here')
+MEALIE_ENABLED = os.getenv('MEALIE_ENABLED', 'true').lower() == 'true'
+MEALIE_URL = os.getenv('MEALIE_URL', 'http://YOUR_SERVER_IP:9000')
+MEALIE_API_TOKEN = os.getenv('MEALIE_API_TOKEN', 'YOUR_API_TOKEN_HERE')
 
 # Tandoor Settings
-# This logic defaults to False if the variable is missing.
-TANDOOR_ENABLED = os.getenv('TANDOOR_ENABLED', 'False').lower() == 'true'
-TANDOOR_URL = os.getenv('TANDOOR_URL', 'http://192.168.1.101:8080')
-TANDOOR_API_KEY = os.getenv('TANDOOR_API_KEY', 'your_tandoor_key_here')
+TANDOOR_ENABLED = os.getenv('TANDOOR_ENABLED', 'false').lower() == 'true'
+TANDOOR_URL = os.getenv('TANDOOR_URL', 'http://YOUR_TANDOOR_IP:8080')
+TANDOOR_API_KEY = os.getenv('TANDOOR_API_KEY', 'YOUR_TANDOOR_KEY')
 
 # 🛑 GENERAL SETTINGS
-DRY_RUN = os.getenv('DRY_RUN', 'False').lower() == 'true'                # Set to True to test without importing
-TARGET_RECIPES_PER_SITE = int(os.getenv('TARGET_RECIPES_PER_SITE', 50))  # Goal: Grab this many NEW recipes per site
-SCAN_DEPTH = int(os.getenv('SCAN_DEPTH', 1000))                          # Look at the last X posts to find those recipes
+DRY_RUN = os.getenv('DRY_RUN', 'False').lower() == 'true'
+TARGET_RECIPES_PER_SITE = int(os.getenv('TARGET_RECIPES_PER_SITE', 50))
+SCAN_DEPTH = int(os.getenv('SCAN_DEPTH', 1000))
+SCRAPE_LANG = os.getenv('SCRAPE_LANG', 'en').lower() # Default to English
 HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+
+# Seed for consistent language detection
+DetectorFactory.seed = 0
 
 # 🏆 THE CURATED LIST
 SITES = [
@@ -111,11 +110,21 @@ def get_mealie_existing_urls():
     try:
         # Check connection first
         r = requests.get(f"{MEALIE_URL}/api/recipes?page=1&perPage=1", headers=headers, timeout=10)
+        
+        # ✅ FAILSAFE: If Mealie is enabled but unreachable, STOP immediately.
+        # This prevents the script from assuming "0 recipes found" and trying to re-import everything.
         if r.status_code != 200:
-            print("❌ [Mealie] Connection Failed. Check URL/Token.")
+            print(f"❌ [Mealie] API FAILURE: {r.status_code}. Cannot connect.")
+            if not DRY_RUN:
+                print("🛑 Aborting to prevent potential duplication issues.")
+                exit(1)
             return set()
+            
     except Exception as e:
-        print(f"❌ [Mealie] Error: {e}")
+        print(f"❌ [Mealie] Connection Error: {e}")
+        if not DRY_RUN:
+            print("🛑 Aborting.")
+            exit(1)
         return set()
 
     print(f"📉 [Mealie] Downloading index...")
@@ -175,7 +184,16 @@ def verify_is_recipe(url):
     try:
         r = requests.get(url, headers=HEADERS, timeout=10)
         if r.status_code != 200: return False
-        # Simple check for schema or common recipe plugins
+
+        # 🛡️ Language Filter
+        try:
+            detected_lang = detect(r.text[:2000])
+            if detected_lang != SCRAPE_LANG:
+                print(f"      ⏩ Skipping ({detected_lang.upper()}): {url}")
+                return False
+        except:
+            return False 
+
         if '"@type":"Recipe"' in r.text or '"@type": "Recipe"' in r.text: return True
         soup = BeautifulSoup(r.content, 'html.parser')
         if soup.find(class_=lambda x: x and ('wp-recipe-maker' in x or 'tasty-recipes' in x or 'mv-create-card' in x)): return True
@@ -189,22 +207,18 @@ def parse_sitemap(sitemap_url, ignore_set):
         r = requests.get(sitemap_url, headers=HEADERS, timeout=15)
         soup = BeautifulSoup(r.content, 'xml')
         
-        # Handle Index Sitemaps (sitemaps inside sitemaps)
         if soup.find('sitemap'):
             for sm in soup.find_all('sitemap'):
                 loc = sm.find('loc').text
                 if len(new_candidates) >= SCAN_DEPTH: break 
                 if "post" in loc: new_candidates.extend(parse_sitemap(loc, ignore_set))
-            # Fallback if no posts found but nested sitemaps exist
             if not new_candidates and soup.find('sitemap'):
                 return parse_sitemap(soup.find('sitemap').find('loc').text, ignore_set)
         
-        # Handle Actual URLs
         for u in soup.find_all('url'):
             if len(new_candidates) >= SCAN_DEPTH: break 
             loc = u.find('loc').text
             if any(x in loc for x in ['/about', '/contact', '/shop', '/privacy', 'login', 'cart', 'roundup']): continue
-            # If URL is NOT in our ignore list (which is combined existing for efficiency)
             if loc not in ignore_set: 
                 new_candidates.append(loc)
     except: pass
@@ -232,18 +246,17 @@ def push_to_tandoor(url):
 if __name__ == "__main__":
     print(f"🚀 RECIPE DREDGER: {len(SITES)} Sites")
     print(f"🎯 Goal: {TARGET_RECIPES_PER_SITE} NEW recipes/site | Scan Depth: {SCAN_DEPTH}")
+    print(f"🗣️  Language: {SCRAPE_LANG.upper()}")
     print("-" * 50)
 
     # 1. Load Existing Libraries
     existing_mealie = get_mealie_existing_urls()
     existing_tandoor = get_tandoor_existing_urls()
 
-    # Combine them for initial sitemap filtering to speed things up
-    # (We only care about a URL if AT LEAST ONE service doesn't have it)
-    # Logic: If Mealie has it AND Tandoor has it (or is disabled), we ignore it.
+    # Combine for deduplication
     combined_existing = set()
     if MEALIE_ENABLED and TANDOOR_ENABLED:
-        combined_existing = existing_mealie.intersection(existing_tandoor) # Only ignore if BOTH have it
+        combined_existing = existing_mealie.intersection(existing_tandoor)
     elif MEALIE_ENABLED:
         combined_existing = existing_mealie
     elif TANDOOR_ENABLED:
@@ -302,7 +315,6 @@ if __name__ == "__main__":
                 imported_count += 1
                 time.sleep(1.5) # Be polite
             else:
-                # If we are here, it means either it failed, or it was a duplicate we missed earlier
                 pass 
             
     print("\n🏁 IMPORT RUN COMPLETE.")
