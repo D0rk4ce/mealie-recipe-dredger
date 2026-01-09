@@ -29,10 +29,10 @@ services:
     container_name: recipe-dredger
     environment:
       - MEALIE_ENABLED=true
-      - MEALIE_URL=[http://192.168.1.](http://192.168.1.)X:9000
+      - MEALIE_URL=http://192.168.1.X:9000
       - MEALIE_API_TOKEN=your_mealie_token
       - TANDOOR_ENABLED=false
-      - TANDOOR_URL=[http://192.168.1.](http://192.168.1.)X:8080
+      - TANDOOR_URL=http://192.168.1.X:8080
       - TANDOOR_API_KEY=your_tandoor_key
       - SCRAPE_LANG=en,de  # Supports comma-separated lists
       # Optional: Override the built-in site list
