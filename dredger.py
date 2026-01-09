@@ -7,30 +7,33 @@ from bs4 import BeautifulSoup
 from langdetect import detect, DetectorFactory
 
 # --- CONFIGURATION ---
-# Uses Environment Variables for Docker (Standardized)
+# Uses Environment Variables to match your Docker Documentation
 
-# Mealie Settings
+# 1. Mealie Settings
 MEALIE_ENABLED = os.getenv('MEALIE_ENABLED', 'true').lower() == 'true'
 MEALIE_URL = os.getenv('MEALIE_URL', 'http://YOUR_SERVER_IP:9000')
-MEALIE_API_TOKEN = os.getenv('MEALIE_API_TOKEN', 'YOUR_API_TOKEN_HERE')
+MEALIE_API_TOKEN = os.getenv('MEALIE_API_TOKEN', 'YOUR_MEALIE_TOKEN')
 
-# Tandoor Settings
+# 2. Tandoor Settings
 TANDOOR_ENABLED = os.getenv('TANDOOR_ENABLED', 'false').lower() == 'true'
 TANDOOR_URL = os.getenv('TANDOOR_URL', 'http://YOUR_TANDOOR_IP:8080')
 TANDOOR_API_KEY = os.getenv('TANDOOR_API_KEY', 'YOUR_TANDOOR_KEY')
 
-# 🛑 GENERAL SETTINGS
+# 3. Scraper Settings
 DRY_RUN = os.getenv('DRY_RUN', 'False').lower() == 'true'
 TARGET_RECIPES_PER_SITE = int(os.getenv('TARGET_RECIPES_PER_SITE', 50))
 SCAN_DEPTH = int(os.getenv('SCAN_DEPTH', 1000))
-SCRAPE_LANG = os.getenv('SCRAPE_LANG', 'en').lower() # Default to English
 HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+
+# 4. Language Settings (Handles "en" or "en,de,fr")
+raw_lang = os.getenv('SCRAPE_LANG', 'en').lower()
+ALLOWED_LANGS = [lang.strip() for lang in raw_lang.split(',') if lang.strip()]
 
 # Seed for consistent language detection
 DetectorFactory.seed = 0
 
 # 🏆 THE CURATED LIST
-# Default list if no environment variable is provided
+# Default list used if the 'SITES' env variable is missing
 DEFAULT_SITES = [
     # --- AFRICAN & SOUL FOOD ---
     "https://www.africanbites.com", "https://lowcarbafrica.com", "https://cheflolaskitchen.com",
@@ -199,10 +202,14 @@ def verify_is_recipe(url):
         # 🛡️ Language Filter
         try:
             detected_lang = detect(r.text[:2000])
-            if detected_lang != SCRAPE_LANG:
-                print(f"      ⏩ Skipping ({detected_lang.upper()}): {url}")
+            # Check if detected language is in the allowed list
+            if detected_lang not in ALLOWED_LANGS:
+                # Verbose logging only on DRY_RUN to keep logs clean
+                if DRY_RUN:
+                    print(f"      ⏩ Skipping ({detected_lang.upper()} not in {ALLOWED_LANGS}): {url}")
                 return False
         except:
+            # If detection fails, we err on side of caution and skip
             return False 
 
         if '"@type":"Recipe"' in r.text or '"@type": "Recipe"' in r.text: return True
@@ -257,7 +264,7 @@ def push_to_tandoor(url):
 if __name__ == "__main__":
     print(f"🚀 RECIPE DREDGER: {len(SITES)} Sites")
     print(f"🎯 Goal: {TARGET_RECIPES_PER_SITE} NEW recipes/site | Scan Depth: {SCAN_DEPTH}")
-    print(f"🗣️  Language: {SCRAPE_LANG.upper()}")
+    print(f"🗣️  Allowed Languages: {', '.join(ALLOWED_LANGS).upper()}")
     print("-" * 50)
 
     # 1. Load Existing Libraries

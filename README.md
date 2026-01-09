@@ -10,7 +10,7 @@ This script automates the process of finding **new** recipes. It scans a curated
 ## 🚀 Features
 
 * **Multi-Platform:** Supports importing to **Mealie** (Primary) and **Tandoor** (Experimental).
-* **Language Verification:** Automatically detects and filters recipes to match your preferred language (default: English).
+* **Multi-Language Support:** Automatically detects and filters recipes. Supports single or multiple languages (e.g., `en` or `en,de,fr`).
 * **Smart Deduplication:** Checks your existing libraries first. It will never import a URL you already have.
 * **Recipe Verification:** Scans candidate pages for Schema.org JSON-LD to ensure it only imports actual recipes.
 * **Deep Sitemap Scanning:** Automatically parses XML sitemaps to find the most recent posts.
@@ -29,14 +29,14 @@ services:
     container_name: recipe-dredger
     environment:
       - MEALIE_ENABLED=true
-      - MEALIE_URL=http://192.168.1.X:9000
+      - MEALIE_URL=[http://192.168.1.](http://192.168.1.)X:9000
       - MEALIE_API_TOKEN=your_mealie_token
       - TANDOOR_ENABLED=false
-      - TANDOOR_URL=http://192.168.1.X:8080
+      - TANDOOR_URL=[http://192.168.1.](http://192.168.1.)X:8080
       - TANDOOR_API_KEY=your_tandoor_key
-      - SCRAPE_LANG=en  # Change to 'es', 'fr', etc.
+      - SCRAPE_LANG=en,de  # Supports comma-separated lists
       # Optional: Override the built-in site list
-      - SITES=https://example.com,https://another-blog.com
+      - SITES=[https://example.com](https://example.com),[https://another-blog.com](https://another-blog.com)
     restart: "no"
 ```
 
@@ -62,7 +62,7 @@ To run this weekly (e.g., Sundays at 3am), add an entry to your host's crontab:
 | `TANDOOR_ENABLED` | `false` | Set to `true` to enable Tandoor imports. |
 | `TANDOOR_URL` | N/A | Your local Tandoor URL. |
 | `TANDOOR_API_KEY` | N/A | Your Tandoor API key. |
-| `SCRAPE_LANG` | `en` | The 2-letter ISO code for the language to scrape. |
+| `SCRAPE_LANG` | `en` | Comma-separated ISO codes for allowed languages (e.g., `en` or `en,de`). |
 | `SITES` | (Curated List) | A comma-separated list of blog URLs to scrape (overrides the built-in list). |
 
 ## 🐍 Manual Usage (Python)
@@ -71,7 +71,7 @@ If you prefer to run the script manually without Docker:
 
 1.  **Clone the repository:**
     ```bash
-    git clone https://github.com/d0rk4ce/mealie-recipe-dredger.git
+    git clone [https://github.com/d0rk4ce/mealie-recipe-dredger.git](https://github.com/d0rk4ce/mealie-recipe-dredger.git)
     cd mealie-recipe-dredger
     ```
 
