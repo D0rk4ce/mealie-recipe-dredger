@@ -1,6 +1,6 @@
 services:
   recipe-dredger:
-    image: ghcr.io/d0rk4ce/recipe-dredger:latest
+    image: ghcr.io/d0rk4ce/mealie-recipe-dredger:latest
     container_name: recipe-dredger
     environment:
       - MEALIE_ENABLED=true
