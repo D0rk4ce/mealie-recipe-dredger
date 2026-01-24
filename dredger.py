@@ -32,8 +32,11 @@ raw_lang = os.getenv('SCRAPE_LANG', 'en').lower()
 ALLOWED_LANGS = [lang.strip() for lang in raw_lang.split(',') if lang.strip()]
 
 # 🧠 MEMORY SETTINGS
-REJECT_FILE = "rejects.json"
-IMPORTED_FILE = "imported.json"
+# Ensure the directory exists to prevent FileNotFoundError
+os.makedirs("data", exist_ok=True) 
+
+REJECT_FILE = "data/rejects.json"
+IMPORTED_FILE = "data/imported.json"
 DetectorFactory.seed = 0
 
 # 🛡️ FAILSAFE: NETWORK RETRY LOGIC
