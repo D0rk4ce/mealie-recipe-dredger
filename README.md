@@ -40,6 +40,7 @@ services:
       
       # --- Scraper Behavior ---
       - DRY_RUN=true                  # 🛡️ SAFETY: Defaults to True. Change to false to import.
+      - LOG_LEVEL=INFO                # ℹ️ LOGGING: Change to DEBUG for verbose details.
       - TARGET_RECIPES_PER_SITE=50     # Stop after importing this many per site
       - SCAN_DEPTH=1000                # How many links to check before giving up on a site
       - SCRAPE_LANG=en,de              # Filter content by language
@@ -60,12 +61,13 @@ services:
     profiles: ["maintenance"]
     environment:
       - DRY_RUN=true            # 🛡️ SAFETY: Set to false to DELETE recipes
+      - LOG_LEVEL=INFO          # ℹ️ LOGGING: Change to DEBUG for verbose details.
       - MAX_WORKERS=2           # Default is 2 to prevent database locks
       # --- Mealie Config ---
       - MEALIE_ENABLED=true
       - MEALIE_URL=http://192.168.1.X:9000
       - MEALIE_API_TOKEN=your_mealie_token
-      # --- EXPERIMENTAL Tandoor Config ---
+      # --- Tandoor Config ---
       - TANDOOR_ENABLED=false
       - TANDOOR_URL=http://192.168.1.X:8080
       - TANDOOR_API_KEY=your_tandoor_key
@@ -113,6 +115,7 @@ docker compose run --rm mealie-cleaner
 | `SCRAPE_LANG` | `en` | Comma-separated ISO codes for allowed languages (e.g., `en` or `en,de`). |
 | `SITES` | (Curated List) | A comma-separated list of blog URLs to scrape (overrides the built-in list). |
 | `DRY_RUN` | `True` | **Dredger:** Scan without importing. **Cleaner:** Scan without deleting. |
+| `LOG_LEVEL` | `INFO` | Set to `DEBUG` for verbose logs (shows metadata and skip reasons). |
 | `TARGET_RECIPES_PER_SITE` | `50` | Stops scanning a specific site after importing this many recipes. |
 | `SCAN_DEPTH` | `1000` | Maximum number of sitemap links to check per site before giving up. |
 

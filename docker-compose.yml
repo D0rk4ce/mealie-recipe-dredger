@@ -12,30 +12,35 @@ services:
       - TANDOOR_API_KEY=your_tandoor_key
       
       # --- Scraper Behavior ---
-      - DRY_RUN=false
-      - TARGET_RECIPES_PER_SITE=50
-      - SCAN_DEPTH=1000
-      - SCRAPE_LANG=en,de
+      - DRY_RUN=true                  # 🛡️ SAFETY: Defaults to True. Change to false to import.
+      - LOG_LEVEL=INFO                # ℹ️ LOGGING: Change to DEBUG for verbose details.
+      - TARGET_RECIPES_PER_SITE=50     # Stop after importing this many per site
+      - SCAN_DEPTH=1000                # How many links to check before giving up on a site
+      - SCRAPE_LANG=en,de              # Filter content by language
       
       # --- Sources ---
-      # - SITES=https://example.com
+      # Optional: Override the built-in site list
+      - SITES=https://example.com,https://another-blog.com
     volumes:
       - ./data:/app/data
     restart: "no"
-
+    
   # 🧹 Maintenance: Master Cleaner
-  # Run manually with: docker compose --profile maintenance up
+  # Run manually with: docker compose run --rm mealie-cleaner
   mealie-cleaner:
     image: ghcr.io/d0rk4ce/mealie-recipe-dredger:latest
     container_name: mealie-cleaner
     command: python maintenance/master_cleaner.py
     profiles: ["maintenance"]
     environment:
-      - DRY_RUN=true            # Set to false to DELETE recipes
-      - MAX_WORKERS=2           # Default is 2 to save SQLite
+      - DRY_RUN=true            # 🛡️ SAFETY: Set to false to DELETE recipes
+      - LOG_LEVEL=INFO          # ℹ️ LOGGING: Change to DEBUG for verbose details.
+      - MAX_WORKERS=2           # Default is 2 to prevent database locks
+      # --- Mealie Config ---
       - MEALIE_ENABLED=true
       - MEALIE_URL=http://192.168.1.X:9000
       - MEALIE_API_TOKEN=your_mealie_token
+      # --- Tandoor Config ---
       - TANDOOR_ENABLED=false
       - TANDOOR_URL=http://192.168.1.X:8080
       - TANDOOR_API_KEY=your_tandoor_key
