@@ -43,7 +43,7 @@ services:
       - LOG_LEVEL=INFO                # ℹ️ LOGGING: Change to DEBUG for verbose details.
       - TARGET_RECIPES_PER_SITE=50     # Stop after importing this many per site
       - SCAN_DEPTH=1000                # How many links to check before giving up on a site
-      - SCRAPE_LANG=en,de              # Filter content by language
+      - SCRAPE_LANG=en                 # Filter content by language
       
       # --- Sources ---
       # Optional: Override the built-in site list
