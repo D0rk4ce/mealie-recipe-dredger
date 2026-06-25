@@ -1,6 +1,27 @@
 # Changelog
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- **Multi-language `LANGUAGE_FILTER`:** accepts a comma-separated list of ISO codes (`LANGUAGE_FILTER=en,pt` or `"en, pt"`) in addition to a single code. Requested by @ohniz87.
+- **`SITES` env accepts a file path** in addition to a comma-separated URL list — matches the documented `.env.example` form.
+- **Test suite (pytest):** initial coverage for storage, retry queue, language filter, webhook routing, master cleaner DELETE, recipe verification, and config loading.
+- **`MAX_RETRY_ATTEMPTS` / `MIN_RETRY_INTERVAL_HOURS`** env vars to tune the retry queue.
+
+### Fixed
+- **Retry queue was inert:** failed imports are now enqueued and re-tried on the next run instead of being silently dropped (closes a long-standing gap behind the existing retry feature).
+- **Crash-safe state writes:** `imported.json`/`rejects.json`/`retry_queue.json` are now written via tmp+rename, so a `docker stop` mid-write no longer truncates state to empty.
+- **`process_retry_queue` honors SIGTERM/SIGINT:** stops between URLs instead of draining the queue before yielding.
+- **`master_cleaner.py` DELETE accepts any 2xx** (not just 200) — Mealie 204 No Content responses no longer trigger phantom retries.
+- **`send_notification` branches by host:** ntfy.sh receives a raw body, Discord gets `{content}`, Slack gets `{text}` — previously a shotgun JSON payload broke ntfy.
+- **Junk-content filter is token-based:** `shopska-salad` no longer flagged because `shop` was a substring, `preview` no longer flagged because `review` was a substring (`dredger.py` and `master_cleaner.py`).
+- **JSON-LD recipe detection parses real `application/ld+json`:** an unrelated inline script that happens to contain `"@type":"Recipe"` no longer false-positives the page.
+- **Mealie endpoint auto-detect retries on 401/403** when there's another candidate left — avoids caching the wrong path on the first guess.
+
+### Removed
+- **`config.py`** — was never imported by either entrypoint (CHANGELOG promise from beta.11 never landed). Constants live in `dredger.py` / `master_cleaner.py`; drift hazard removed.
+
 ## [1.0.0-beta.11] - 2026-02-13
 
 ### Added - Content

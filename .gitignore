@@ -44,6 +44,5 @@ Thumbs.db
 
 # Dev Tools (Excluded from release)
 scripts/
-tests/
 .pytest_cache/
 .agent/

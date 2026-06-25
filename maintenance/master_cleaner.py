@@ -98,8 +98,11 @@ def delete_mealie_recipe(slug, name, reason, url=None):
     for attempt in range(max_retries):
         try:
             r = requests.delete(f"{MEALIE_URL}/api/recipes/{slug}", headers=headers, timeout=10)
-            if r.status_code == 200: break
-            time.sleep(1) 
+            # Accept any 2xx — Mealie historically returns 200, but 204 No Content
+            # is REST-conventional and used by some versions / reverse proxies.
+            if 200 <= r.status_code < 300:
+                break
+            time.sleep(1)
         except Exception as e:
             logger.warning(f"Error deleting {slug} (Attempt {attempt+1}): {e}")
             time.sleep(1)
@@ -151,10 +154,21 @@ def is_junk_content(name, url):
     except Exception:
         slug = ""
     name_l = name.lower()
-    
+
+    # Token-based slug match so "preview" doesn't match "review",
+    # "shopping" doesn't match "shop", "production" doesn't match "product", etc.
+    slug_tokens = set(re.split(r'[-_]+', slug))
+
     for kw in HIGH_RISK_KEYWORDS:
-        if kw.replace(" ", "-") in slug or kw in name_l: return True
-    
+        kw_slug = kw.replace(" ", "-")
+        kw_tokens = set(re.split(r'[-_]+', kw_slug))
+        if kw_tokens.issubset(slug_tokens):
+            return True
+        # Name match remains substring-based: titles are natural language and
+        # token boundaries are unreliable; keep this targeted to obvious flags.
+        if f' {kw} ' in f' {name_l} ' or name_l.startswith(kw + ' ') or name_l.endswith(' ' + kw):
+            return True
+
     if LISTICLE_REGEX.match(slug) or LISTICLE_REGEX.match(name_l): return True
     if any(x in url.lower() for x in ["privacy-policy", "contact", "about-us", "login", "cart"]): return True
     return False
