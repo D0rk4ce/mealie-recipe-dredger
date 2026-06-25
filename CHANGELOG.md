@@ -10,6 +10,7 @@ All notable changes to this project will be documented in this file.
 - **`MAX_RETRY_ATTEMPTS` / `MIN_RETRY_INTERVAL_HOURS`** env vars to tune the retry queue.
 
 ### Fixed
+- **Tandoor v2 import (issue #6):** the old `/api/recipe/import-url/` endpoint was removed in Tandoor v2 and now returns 405. Import was rewritten to the v2 two-step flow — scrape via `POST /api/recipe-from-source/`, then persist via `POST /api/recipe/` — with existing-duplicate and YouTube/share-link short-circuits. Reported by @wkleinhenz (Tandoor 2.6.4). *Note: needs verification against a live Tandoor instance.*
 - **Retry queue was inert:** failed imports are now enqueued and re-tried on the next run instead of being silently dropped (closes a long-standing gap behind the existing retry feature).
 - **Crash-safe state writes:** `imported.json`/`rejects.json`/`retry_queue.json` are now written via tmp+rename, so a `docker stop` mid-write no longer truncates state to empty.
 - **`process_retry_queue` honors SIGTERM/SIGINT:** stops between URLs instead of draining the queue before yielding.

@@ -578,6 +578,40 @@ class RecipeVerifier:
 # IMPORT MANAGER (AUTO-DETECT MEALIE VERSION)
 # ============================================================================
 
+def _build_tandoor_create_payload(recipe: dict, fallback_url: str) -> dict:
+    """Map a `recipe-from-source` scrape result onto a `/api/recipe/` create body.
+
+    The scraped recipe is already close to the create shape (nested steps with
+    ingredients, keywords). We only need to:
+      - guarantee `steps` is present (the create serializer requires it),
+      - set `internal=True` and a `source_url`,
+      - clean keywords: a null `id` confuses Tandoor's writable-nested PK lookup,
+        and `import_keyword` is not a model field — keep just name/label.
+    Image upload and recipe `properties` are intentionally omitted: images need a
+    separate multipart call and properties reference space-specific property_type
+    ids that may not exist. The recipe still imports without them.
+    """
+    keywords = []
+    for kw in recipe.get('keywords') or []:
+        name = kw.get('name') or kw.get('label')
+        if not name:
+            continue
+        keywords.append({"name": name, "label": kw.get('label') or name})
+
+    return {
+        "name": recipe.get('name') or "Untitled",
+        "description": recipe.get('description') or "",
+        "internal": True,
+        "source_url": recipe.get('source_url') or fallback_url,
+        "servings": recipe.get('servings') or 1,
+        "servings_text": recipe.get('servings_text') or "",
+        "working_time": recipe.get('working_time') or 0,
+        "waiting_time": recipe.get('waiting_time') or 0,
+        "steps": recipe.get('steps') or [],
+        "keywords": keywords,
+    }
+
+
 class ImportManager:
     def __init__(self, session: requests.Session, storage: StorageManager, rate_limiter: RateLimiter, dry_run: bool):
         self.session = session
@@ -649,26 +683,65 @@ class ImportManager:
         return False, f"All API attempts failed. Last error: {last_error}"
 
     def import_to_tandoor(self, url: str) -> Tuple[bool, Optional[str]]:
+        """Import a recipe into Tandoor (v2 API).
+
+        Tandoor v2 dropped the old one-shot `/api/recipe/import-url/` endpoint
+        (it now 405s — see issue #6). The current flow is two steps:
+          1. POST /api/recipe-from-source/  -> scrapes the URL, returns parsed JSON
+             (but does NOT persist a normal blog URL).
+          2. POST /api/recipe/              -> creates the recipe from that JSON.
+        Some sources (YouTube, Tandoor share links) are persisted by step 1
+        itself, which returns a `recipe_id`; in that case we skip step 2.
+        """
         if self.dry_run:
             logger.info(f"   [DRY RUN] Would import to Tandoor: {url}")
             return True, None
-        
+
         headers = {"Authorization": f"Bearer {TANDOOR_API_KEY}"}
         try:
             self.rate_limiter.wait_if_needed(TANDOOR_URL)
-            r = self.session.post(
-                f"{TANDOOR_URL}/api/recipe/import-url/", 
-                headers=headers, 
-                json={"url": url}, 
-                timeout=IMPORT_TIMEOUT
+
+            # --- Step 1: scrape the URL into recipe JSON ---
+            scrape = self.session.post(
+                f"{TANDOOR_URL}/api/recipe-from-source/",
+                headers=headers,
+                json={"url": url},
+                timeout=IMPORT_TIMEOUT,
             )
-            
-            if r.status_code in [200, 201]:
+            if scrape.status_code not in (200, 201):
+                return False, f"HTTP {scrape.status_code} on /api/recipe-from-source/"
+
+            payload = scrape.json()
+            if payload.get('error'):
+                return False, payload.get('msg') or "scrape error"
+
+            # Already persisted by the scrape view (YouTube / Tandoor share link)
+            if payload.get('recipe_id'):
                 logger.info(f"   ✅ [Tandoor] Imported: {url}")
                 return True, None
-            else:
-                return False, f"HTTP {r.status_code}"
-        
+
+            # Already in the library for this source_url — treat as success
+            if payload.get('duplicates'):
+                logger.info(f"   ⚠️ [Tandoor] Duplicate: {url}")
+                return True, None
+
+            recipe = payload.get('recipe')
+            if not recipe:
+                return False, "No recipe data returned from scrape"
+
+            # --- Step 2: persist the scraped recipe ---
+            create_body = _build_tandoor_create_payload(recipe, fallback_url=url)
+            created = self.session.post(
+                f"{TANDOOR_URL}/api/recipe/",
+                headers=headers,
+                json=create_body,
+                timeout=IMPORT_TIMEOUT,
+            )
+            if created.status_code in (200, 201):
+                logger.info(f"   ✅ [Tandoor] Imported: {url}")
+                return True, None
+            return False, f"HTTP {created.status_code} on /api/recipe/"
+
         except Exception as e:
             return False, str(e)
     
