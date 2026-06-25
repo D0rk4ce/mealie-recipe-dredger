@@ -71,8 +71,18 @@ NOTIFICATION_WEBHOOK_URL = os.getenv('NOTIFICATION_WEBHOOK_URL', '').strip()
 # Library sync
 SYNC_LIBRARY = os.getenv('SYNC_LIBRARY', 'true').lower() == 'true'
 
-# Language filtering (e.g., 'en', 'es', 'fr' or empty to allow all)
-LANGUAGE_FILTER = os.getenv('LANGUAGE_FILTER', '').strip().lower()
+# Language filtering: accepts a single ISO code ('en') or a comma-separated list
+# ('en,pt' or 'en, pt'). Empty value disables the filter.
+def parse_language_filter(raw: str) -> List[str]:
+    if not raw:
+        return []
+    raw = raw.strip()
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in ('"', "'"):
+        raw = raw[1:-1]
+    return [code.strip().lower() for code in raw.split(',') if code.strip()]
+
+
+LANGUAGE_FILTER: List[str] = parse_language_filter(os.getenv('LANGUAGE_FILTER', ''))
 
 # Seed langdetect for reproducible results
 DetectorFactory.seed = 0
@@ -94,6 +104,10 @@ IMPORT_TIMEOUT = 20
 ROBOTS_TXT_TIMEOUT = 5
 MAX_SITEMAP_DEPTH = 2
 KNOWN_RECIPE_CLASSES = ['wp-recipe-maker', 'tasty-recipes', 'mv-create-card', 'recipe-card']
+
+# Retry queue tuning (overridable via env)
+MAX_RETRY_ATTEMPTS = int(os.getenv('MAX_RETRY_ATTEMPTS', 3))
+MIN_RETRY_INTERVAL_HOURS = float(os.getenv('MIN_RETRY_INTERVAL_HOURS', 1))
 
 
 
@@ -176,13 +190,29 @@ class StorageManager:
                 logger.warning(f"Error loading {filename}: {e}")
         return {}
     
+    def _atomic_write_json(self, filename: str, data):
+        # Write to sibling .tmp then os.replace — POSIX rename is atomic, so a
+        # crash mid-serialize leaves the prior file intact instead of empty.
+        tmp = filename + ".tmp"
+        try:
+            with open(tmp, 'w') as f:
+                json.dump(data, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, filename)
+        except Exception:
+            if os.path.exists(tmp):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+            raise
+
     def _save_json_set(self, filename: str, data_set: Set[str]):
-        with open(filename, 'w') as f:
-            json.dump(list(data_set), f, indent=2)
-    
+        self._atomic_write_json(filename, list(data_set))
+
     def _save_json_dict(self, filename: str, data_dict: dict):
-        with open(filename, 'w') as f:
-            json.dump(data_dict, f, indent=2)
+        self._atomic_write_json(filename, data_dict)
     
     def add_imported(self, url: str):
         self.imported.add(url)
@@ -440,6 +470,28 @@ class SitemapCrawler:
 # ============================================================================
 # RECIPE VERIFIER
 # ============================================================================
+def _contains_recipe_type(node) -> bool:
+    """Walk a JSON-LD payload looking for an @type == 'Recipe' object.
+
+    Handles three real-world shapes:
+      {"@type": "Recipe", ...}
+      {"@type": ["Recipe", "..."], ...}
+      {"@graph": [..., {"@type": "Recipe"}, ...]}
+    """
+    if isinstance(node, dict):
+        t = node.get('@type')
+        if t == 'Recipe' or (isinstance(t, list) and 'Recipe' in t):
+            return True
+        for v in node.values():
+            if _contains_recipe_type(v):
+                return True
+    elif isinstance(node, list):
+        for v in node:
+            if _contains_recipe_type(v):
+                return True
+    return False
+
+
 class RecipeVerifier:
     def __init__(self, session: requests.Session):
         self.session = session
@@ -448,12 +500,15 @@ class RecipeVerifier:
         try:
             path = urlparse(url).path
             slug = path.strip("/").split("/")[-1].lower()
-            
-            if LISTICLE_REGEX.search(slug): 
+
+            if LISTICLE_REGEX.search(slug):
                 return f"Listicle detected: {slug}"
-            
+
+            # Token-based match (split slug on hyphen) to avoid false positives like
+            # "shopska-salad" matching "shop" or "productive-week" matching "product".
+            slug_tokens = set(re.split(r'[-_]+', slug))
             for kw in BAD_KEYWORDS:
-                if kw in slug: 
+                if kw in slug_tokens:
                     return f"Bad keyword: {kw}"
             
             if soup:
@@ -474,35 +529,43 @@ class RecipeVerifier:
             
             # Recipe detection
             is_recipe = False
-            soup = None
-            
-            if '"@type":"Recipe"' in r.text or '"@type": "Recipe"' in r.text:
-                is_recipe = True
-            
+            soup = BeautifulSoup(r.content, 'lxml')
+
+            # 1. Proper JSON-LD parsing — only ld+json scripts, only true Recipe @type
+            #    (handles @graph variants common on WordPress).
+            for script in soup.find_all('script', type='application/ld+json'):
+                if not script.string:
+                    continue
+                try:
+                    data = json.loads(script.string)
+                except (ValueError, TypeError):
+                    continue
+                if _contains_recipe_type(data):
+                    is_recipe = True
+                    break
+
+            # 2. Fall back to recipe-plugin CSS classes
             if not is_recipe:
-                soup = BeautifulSoup(r.content, 'lxml')
                 if soup.find(class_=lambda x: x and any(cls in x for cls in KNOWN_RECIPE_CLASSES)):
                     is_recipe = True
             
-            if not is_recipe: 
+            if not is_recipe:
                 return False, soup, "No recipe detected"
-            
-            if soup is None: 
-                soup = BeautifulSoup(r.content, 'lxml')
-            
+
             # Paranoid checks
             skip_reason = self.is_paranoid_skip(url, soup)
             if skip_reason: 
                 return False, soup, skip_reason
             
-            # Language filter
+            # Language filter — accepts one or many ISO codes
             if LANGUAGE_FILTER:
                 try:
                     text = soup.get_text(separator=' ', strip=True)[:1000]
                     if len(text) > 50:  # Need enough text for reliable detection
                         detected_lang = detect(text)
-                        if detected_lang != LANGUAGE_FILTER:
-                            return False, soup, f"Language mismatch: detected '{detected_lang}', want '{LANGUAGE_FILTER}'"
+                        if detected_lang not in LANGUAGE_FILTER:
+                            allowed = ','.join(LANGUAGE_FILTER)
+                            return False, soup, f"Language mismatch: detected '{detected_lang}', want one of '{allowed}'"
                 except Exception as e:
                     logger.debug(f"Language detection failed for {url}: {e}")
             
@@ -514,6 +577,40 @@ class RecipeVerifier:
 # ============================================================================
 # IMPORT MANAGER (AUTO-DETECT MEALIE VERSION)
 # ============================================================================
+
+def _build_tandoor_create_payload(recipe: dict, fallback_url: str) -> dict:
+    """Map a `recipe-from-source` scrape result onto a `/api/recipe/` create body.
+
+    The scraped recipe is already close to the create shape (nested steps with
+    ingredients, keywords). We only need to:
+      - guarantee `steps` is present (the create serializer requires it),
+      - set `internal=True` and a `source_url`,
+      - clean keywords: a null `id` confuses Tandoor's writable-nested PK lookup,
+        and `import_keyword` is not a model field — keep just name/label.
+    Image upload and recipe `properties` are intentionally omitted: images need a
+    separate multipart call and properties reference space-specific property_type
+    ids that may not exist. The recipe still imports without them.
+    """
+    keywords = []
+    for kw in recipe.get('keywords') or []:
+        name = kw.get('name') or kw.get('label')
+        if not name:
+            continue
+        keywords.append({"name": name, "label": kw.get('label') or name})
+
+    return {
+        "name": recipe.get('name') or "Untitled",
+        "description": recipe.get('description') or "",
+        "internal": True,
+        "source_url": recipe.get('source_url') or fallback_url,
+        "servings": recipe.get('servings') or 1,
+        "servings_text": recipe.get('servings_text') or "",
+        "working_time": recipe.get('working_time') or 0,
+        "waiting_time": recipe.get('waiting_time') or 0,
+        "steps": recipe.get('steps') or [],
+        "keywords": keywords,
+    }
+
 
 class ImportManager:
     def __init__(self, session: requests.Session, storage: StorageManager, rate_limiter: RateLimiter, dry_run: bool):
@@ -542,13 +639,26 @@ class ImportManager:
         
         last_error = None
 
-        for endpoint in endpoints:
+        # Auth-failure on the FIRST guess is ambiguous (wrong endpoint vs bad token),
+        # so we only try the next endpoint when there's another one to try AND we
+        # haven't yet found a working endpoint. If both fail with 401/403, the
+        # error is surfaced.
+        trying_multiple = len(endpoints) > 1 and self.working_endpoint is None
+
+        for idx, endpoint in enumerate(endpoints):
             try:
                 full_url = f"{MEALIE_URL}{endpoint}"
                 r = self.session.post(full_url, headers=headers, json={"url": url}, timeout=IMPORT_TIMEOUT)
-                
+
                 # If 404/405, the endpoint is wrong/deprecated. Try the next one.
                 if r.status_code in [404, 405]:
+                    last_error = f"HTTP {r.status_code} on {endpoint}"
+                    continue
+
+                # If 401/403 on the first guess and we have another endpoint left,
+                # treat as "wrong endpoint, try the other" rather than caching a
+                # broken default.
+                if r.status_code in [401, 403] and trying_multiple and idx < len(endpoints) - 1:
                     last_error = f"HTTP {r.status_code} on {endpoint}"
                     continue
 
@@ -573,26 +683,65 @@ class ImportManager:
         return False, f"All API attempts failed. Last error: {last_error}"
 
     def import_to_tandoor(self, url: str) -> Tuple[bool, Optional[str]]:
+        """Import a recipe into Tandoor (v2 API).
+
+        Tandoor v2 dropped the old one-shot `/api/recipe/import-url/` endpoint
+        (it now 405s — see issue #6). The current flow is two steps:
+          1. POST /api/recipe-from-source/  -> scrapes the URL, returns parsed JSON
+             (but does NOT persist a normal blog URL).
+          2. POST /api/recipe/              -> creates the recipe from that JSON.
+        Some sources (YouTube, Tandoor share links) are persisted by step 1
+        itself, which returns a `recipe_id`; in that case we skip step 2.
+        """
         if self.dry_run:
             logger.info(f"   [DRY RUN] Would import to Tandoor: {url}")
             return True, None
-        
+
         headers = {"Authorization": f"Bearer {TANDOOR_API_KEY}"}
         try:
             self.rate_limiter.wait_if_needed(TANDOOR_URL)
-            r = self.session.post(
-                f"{TANDOOR_URL}/api/recipe/import-url/", 
-                headers=headers, 
-                json={"url": url}, 
-                timeout=IMPORT_TIMEOUT
+
+            # --- Step 1: scrape the URL into recipe JSON ---
+            scrape = self.session.post(
+                f"{TANDOOR_URL}/api/recipe-from-source/",
+                headers=headers,
+                json={"url": url},
+                timeout=IMPORT_TIMEOUT,
             )
-            
-            if r.status_code in [200, 201]:
+            if scrape.status_code not in (200, 201):
+                return False, f"HTTP {scrape.status_code} on /api/recipe-from-source/"
+
+            payload = scrape.json()
+            if payload.get('error'):
+                return False, payload.get('msg') or "scrape error"
+
+            # Already persisted by the scrape view (YouTube / Tandoor share link)
+            if payload.get('recipe_id'):
                 logger.info(f"   ✅ [Tandoor] Imported: {url}")
                 return True, None
-            else:
-                return False, f"HTTP {r.status_code}"
-        
+
+            # Already in the library for this source_url — treat as success
+            if payload.get('duplicates'):
+                logger.info(f"   ⚠️ [Tandoor] Duplicate: {url}")
+                return True, None
+
+            recipe = payload.get('recipe')
+            if not recipe:
+                return False, "No recipe data returned from scrape"
+
+            # --- Step 2: persist the scraped recipe ---
+            create_body = _build_tandoor_create_payload(recipe, fallback_url=url)
+            created = self.session.post(
+                f"{TANDOOR_URL}/api/recipe/",
+                headers=headers,
+                json=create_body,
+                timeout=IMPORT_TIMEOUT,
+            )
+            if created.status_code in (200, 201):
+                logger.info(f"   ✅ [Tandoor] Imported: {url}")
+                return True, None
+            return False, f"HTTP {created.status_code} on /api/recipe/"
+
         except Exception as e:
             return False, str(e)
     
@@ -689,23 +838,62 @@ def sync_existing_library(session: requests.Session, storage: StorageManager):
     if synced > 0:
         logger.info(f"   📚 Synced {synced} existing library URLs")
 
-def process_retry_queue(storage: StorageManager, importer, verifier: 'RecipeVerifier', rate_limiter: 'RateLimiter') -> int:
-    """Process pending retries from previous runs. Returns count of successful imports."""
+def process_candidate(url: str,
+                      storage: StorageManager,
+                      importer: 'ImportManager',
+                      verifier: 'RecipeVerifier',
+                      rate_limiter: 'RateLimiter',
+                      site_stats: dict) -> str:
+    """Verify and import a single candidate URL.
+
+    Returns one of: 'skipped', 'imported', 'rejected', 'retry'.
+    On import failure the URL is enqueued in the retry queue rather than dropped.
+    """
+    if url in storage.imported or url in storage.rejects:
+        return 'skipped'
+
+    rate_limiter.wait_if_needed(url)
+    is_recipe, _soup, error = verifier.verify_recipe(url)
+
+    if not is_recipe:
+        storage.add_reject(url)
+        site_stats['rejected'] += 1
+        return 'rejected'
+
+    if importer.import_recipe(url):
+        storage.add_imported(url)
+        site_stats['imported'] += 1
+        return 'imported'
+
+    # Import failure -> queue for retry instead of dropping silently
+    storage.add_retry(url, reason='import_failed')
+    site_stats['errors'] += 1
+    return 'retry'
+
+
+def process_retry_queue(storage: StorageManager,
+                        importer,
+                        verifier: 'RecipeVerifier',
+                        rate_limiter: 'RateLimiter',
+                        killer: Optional['GracefulKiller'] = None) -> int:
+    """Process pending retries from previous runs. Returns count of successful imports.
+
+    `killer.kill_now` is checked between URLs so a SIGTERM during the retry phase
+    stops the loop immediately instead of draining every eligible URL.
+    """
     if not storage.retry_queue:
         return 0
-    
-    MAX_RETRY_ATTEMPTS = 3
-    MIN_RETRY_INTERVAL_HOURS = 1
+
     imported_count = 0
     completed_urls = []
-    
+
     eligible = []
     for url, info in storage.retry_queue.items():
         if info.get('attempts', 0) >= MAX_RETRY_ATTEMPTS:
             storage.add_reject(url)
             completed_urls.append(url)
             continue
-        
+
         last_attempt = info.get('last_attempt', '')
         if last_attempt:
             try:
@@ -714,16 +902,20 @@ def process_retry_queue(storage: StorageManager, importer, verifier: 'RecipeVeri
                     continue
             except (ValueError, TypeError):
                 pass
-        
+
         eligible.append(url)
-    
+
     if eligible:
         logger.info(f"🔄 Processing {len(eligible)} retries from previous runs...")
-    
+
     for url in eligible:
+        if killer is not None and killer.kill_now:
+            logger.info("⏸️  Retry loop interrupted by shutdown signal")
+            break
+
         rate_limiter.wait_if_needed(url)
         is_recipe, soup, error = verifier.verify_recipe(url)
-        
+
         if is_recipe:
             if importer.import_recipe(url):
                 storage.add_imported(url)
@@ -735,20 +927,20 @@ def process_retry_queue(storage: StorageManager, importer, verifier: 'RecipeVeri
         else:
             storage.add_reject(url)
             completed_urls.append(url)
-    
+
     for url in completed_urls:
         storage.retry_queue.pop(url, None)
-    
+
     if imported_count > 0:
         logger.info(f"   ✅ Retries: {imported_count} imported, {len(completed_urls) - imported_count} permanently rejected")
-    
+
     return imported_count
 
 def send_notification(storage: StorageManager):
-    """Send a summary notification via webhook (Discord, Slack, ntfy, etc.)."""
+    """Send a summary notification via webhook (Discord, Slack, ntfy.sh)."""
     if not NOTIFICATION_WEBHOOK_URL:
         return
-    
+
     summary = (
         f"🍲 Recipe Dredger Complete ({VERSION})\n"
         f"   Imported: {len(storage.imported)}\n"
@@ -756,9 +948,20 @@ def send_notification(storage: StorageManager):
         f"   Retry Queue: {len(storage.retry_queue)}\n"
         f"   Cached Sitemaps: {len(storage.sitemap_cache)}"
     )
-    
+
+    host = urlparse(NOTIFICATION_WEBHOOK_URL).netloc.lower()
+
     try:
-        requests.post(NOTIFICATION_WEBHOOK_URL, json={"content": summary, "text": summary}, timeout=ROBOTS_TXT_TIMEOUT)
+        if 'ntfy.sh' in host or host.startswith('ntfy.'):
+            # ntfy.sh takes the body raw, not JSON-wrapped.
+            requests.post(NOTIFICATION_WEBHOOK_URL, data=summary.encode('utf-8'), timeout=ROBOTS_TXT_TIMEOUT)
+        elif 'discord' in host:
+            requests.post(NOTIFICATION_WEBHOOK_URL, json={"content": summary}, timeout=ROBOTS_TXT_TIMEOUT)
+        elif 'slack' in host:
+            requests.post(NOTIFICATION_WEBHOOK_URL, json={"text": summary}, timeout=ROBOTS_TXT_TIMEOUT)
+        else:
+            # Unknown host — send both shapes for best-effort compatibility.
+            requests.post(NOTIFICATION_WEBHOOK_URL, json={"content": summary, "text": summary}, timeout=ROBOTS_TXT_TIMEOUT)
         logger.info("📨 Notification sent")
     except Exception as e:
         logger.warning(f"Failed to send notification: {e}")
@@ -812,9 +1015,25 @@ def load_sites_from_source(source_path: str = None) -> List[str]:
             logger.warning(f"Failed to load sites.json: {e}")
             pass
 
-    # 3. Environment variable
-    if os.getenv('SITES'):
-        return [s.strip() for s in os.getenv('SITES').split(',') if s.strip()]
+    # 3. Environment variable: accepts either a path to a JSON file or a
+    #    comma-separated list of URLs (.env.example documents both forms).
+    sites_env = os.getenv('SITES', '').strip()
+    if sites_env:
+        # Strip enclosing quotes (`SITES="..."`)
+        if len(sites_env) >= 2 and sites_env[0] == sites_env[-1] and sites_env[0] in ('"', "'"):
+            sites_env = sites_env[1:-1]
+        # Treat as file path if it looks like one and exists
+        looks_like_path = (
+            os.sep in sites_env or sites_env.startswith('.') or sites_env.endswith('.json')
+        )
+        if looks_like_path and os.path.exists(sites_env):
+            try:
+                with open(sites_env, 'r') as f:
+                    return parse_sites_json(json.load(f))
+            except Exception as e:
+                logger.error(f"Failed to load SITES path {sites_env}: {e}")
+                sys.exit(1)
+        return [s.strip() for s in sites_env.split(',') if s.strip()]
 
     # 4. Defaults (The Full Curated List)
     return DEFAULT_SITES
@@ -860,7 +1079,7 @@ def main():
         sync_existing_library(session, storage)
     
     # Process retry queue from previous runs
-    process_retry_queue(storage, importer, verifier, rate_limiter)
+    process_retry_queue(storage, importer, verifier, rate_limiter, killer=killer)
     
     # Process sites
     random.shuffle(sites_list)
@@ -890,35 +1109,19 @@ def main():
         imported_count = 0
         for candidate in candidates:
             # Check for graceful shutdown in inner loop
-            if killer.kill_now: 
+            if killer.kill_now:
                 break
-            
-            if imported_count >= TARGET_COUNT: 
+
+            if imported_count >= TARGET_COUNT:
                 break
-            
-            url = candidate.url
-            
-            if url in storage.imported or url in storage.rejects: 
-                continue
-            
-            rate_limiter.wait_if_needed(url)
-            
-            is_recipe, soup, error = verifier.verify_recipe(url)
-            
-            if is_recipe:
-                if importer.import_recipe(url):
-                    storage.add_imported(url)
-                    imported_count += 1
-                    site_stats['imported'] += 1
-                else:
-                    site_stats['errors'] += 1
-                    if not TQDM_AVAILABLE: 
-                        logger.error(f"   ❌ Import failed: {url}")
-            else:
-                if not TQDM_AVAILABLE: 
-                    logger.debug(f"   Skipping ({error}): {url}")
-                storage.add_reject(url)
-                site_stats['rejected'] += 1
+
+            outcome = process_candidate(
+                candidate.url, storage, importer, verifier, rate_limiter, site_stats,
+            )
+            if outcome == 'imported':
+                imported_count += 1
+            elif outcome == 'retry' and not TQDM_AVAILABLE:
+                logger.error(f"   ❌ Import failed (queued for retry): {candidate.url}")
         
         if not TQDM_AVAILABLE:
             logger.info(f"   Site Results: {site_stats['imported']} imported, "
