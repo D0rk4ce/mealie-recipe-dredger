@@ -46,3 +46,7 @@ HIGH_RISK_KEYWORDS = [
 ]
 
 BAD_KEYWORDS = ["roundup", "collection", "guide", "review", "giveaway", "shop", "store", "product"]
+
+# --- CATEGORISATION (optional, off by default) ---
+SET_CATEGORIES = os.getenv('SET_CATEGORIES', 'false').lower() == 'true'
+CUISINE_MIN_SCORE = float(os.getenv('CUISINE_MIN_SCORE', 2))
