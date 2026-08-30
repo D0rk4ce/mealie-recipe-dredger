@@ -23,6 +23,27 @@ This script automates the process of finding **new** recipes. It scans a curated
 * **Per-Site Statistics:** Tracks imported/rejected/error counts for each site processed.
 * **Progress Visualization:** Optional tqdm progress bars for long-running operations.
 
+## 🚫 Ingredient Exclusions (Optional)
+
+Reject recipes containing things you don't want, before they reach your
+library. Off by default; enable in `.env`:
+
+```
+EXCLUDE_PRESET=vegetarian        # vegan, vegetarian, gluten, nuts, alcohol
+EXCLUDE_PRESET=vegetarian,nuts   # combine presets
+EXCLUDE_INGREDIENTS=cilantro     # plus your own terms
+EXCLUDE_ALLOW=coconut milk       # phrases that should never match
+```
+
+Ingredients are read from the page's Schema.org JSON-LD, which the verifier has
+already fetched, so this costs no extra requests.
+
+Each preset carries an allow list for phrases that would otherwise be false
+positives — "peanut butter" is not butter, "eggplant" is not egg, "gluten free
+flour" is not gluten, "nutmeg" is not a nut, "white wine vinegar" is not wine.
+Custom terms from `EXCLUDE_INGREDIENTS` have no such guard, so prefer specific
+words.
+
 ## 📊 What's New in v1.0-beta.11
 
 ### Massive Content Expansion
