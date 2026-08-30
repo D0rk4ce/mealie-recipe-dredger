@@ -27,6 +27,9 @@ from datetime import datetime, timedelta
 # --- CONSTANTS ---
 VERSION = "1.0.0-beta.11"
 
+# --- OPTIONAL INGREDIENT FILTER ---
+from ingredient_filter import IngredientFilter, extract_ingredients
+
 # --- OPTIONAL VISUALS ---
 try:
     from tqdm import tqdm
@@ -56,6 +59,10 @@ DRY_RUN = os.getenv('DRY_RUN', 'true').lower() == 'true'
 MEALIE_ENABLED = os.getenv('MEALIE_ENABLED', 'true').lower() == 'true'
 MEALIE_URL = os.getenv('MEALIE_URL', 'http://localhost:9000').rstrip('/')
 MEALIE_API_TOKEN = os.getenv('MEALIE_API_TOKEN', 'your-token')
+
+EXCLUDE_PRESET = [p for p in os.getenv('EXCLUDE_PRESET', '').split(',') if p.strip()]
+EXCLUDE_INGREDIENTS = [t for t in os.getenv('EXCLUDE_INGREDIENTS', '').split(',') if t.strip()]
+EXCLUDE_ALLOW = [t for t in os.getenv('EXCLUDE_ALLOW', '').split(',') if t.strip()]
 
 TANDOOR_ENABLED = os.getenv('TANDOOR_ENABLED', 'false').lower() == 'true'
 TANDOOR_URL = os.getenv('TANDOOR_URL', 'http://localhost:8080').rstrip('/')
@@ -854,6 +861,16 @@ def main():
     crawler = SitemapCrawler(session, storage)
     verifier = RecipeVerifier(session)
     importer = ImportManager(session, storage, rate_limiter, DRY_RUN_MODE)
+
+    try:
+        ingredient_filter = IngredientFilter(EXCLUDE_PRESET, EXCLUDE_INGREDIENTS,
+                                             EXCLUDE_ALLOW)
+    except ValueError as e:
+        logger.error(f"❌ {e}")
+        sys.exit(1)
+    if ingredient_filter.enabled:
+        described = ', '.join(EXCLUDE_PRESET + EXCLUDE_INGREDIENTS)
+        logger.info(f"   🚫 Excluding recipes containing: {described}")
     
     # Sync existing library to avoid duplicate API calls
     if SYNC_LIBRARY and not DRY_RUN_MODE:
@@ -905,6 +922,15 @@ def main():
             
             is_recipe, soup, error = verifier.verify_recipe(url)
             
+            if is_recipe and ingredient_filter.enabled:
+                ok, why = ingredient_filter.check(extract_ingredients(soup))
+                if not ok:
+                    if not TQDM_AVAILABLE:
+                        logger.debug(f"   🚫 Skipping ({why}): {url}")
+                    storage.add_reject(url)
+                    site_stats['rejected'] += 1
+                    continue
+
             if is_recipe:
                 if importer.import_recipe(url):
                     storage.add_imported(url)

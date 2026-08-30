@@ -46,3 +46,11 @@ HIGH_RISK_KEYWORDS = [
 ]
 
 BAD_KEYWORDS = ["roundup", "collection", "guide", "review", "giveaway", "shop", "store", "product"]
+
+# --- INGREDIENT EXCLUSIONS (optional, off by default) ---
+# Presets: vegan, vegetarian, gluten, nuts, alcohol. Comma-separated.
+EXCLUDE_PRESET = [p for p in os.getenv('EXCLUDE_PRESET', '').split(',') if p.strip()]
+# Extra terms of your own, comma-separated
+EXCLUDE_INGREDIENTS = [t for t in os.getenv('EXCLUDE_INGREDIENTS', '').split(',') if t.strip()]
+# Phrases that should never count as a match
+EXCLUDE_ALLOW = [t for t in os.getenv('EXCLUDE_ALLOW', '').split(',') if t.strip()]
