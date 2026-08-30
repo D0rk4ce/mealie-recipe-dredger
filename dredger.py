@@ -27,6 +27,9 @@ from datetime import datetime, timedelta
 # --- CONSTANTS ---
 VERSION = "1.0.0-beta.11"
 
+# --- OPTIONAL CATEGORISATION ---
+import categoriser
+
 # --- OPTIONAL VISUALS ---
 try:
     from tqdm import tqdm
@@ -523,12 +526,15 @@ class ImportManager:
         self.dry_run = dry_run
         # Cache the working endpoint so we don't guess every time
         self.working_endpoint = None
+        # Slug of the most recent successful Mealie import
+        self.last_slug = None
 
     def import_to_mealie(self, url: str) -> Tuple[bool, Optional[str]]:
         if self.dry_run:
             logger.info(f"   [DRY RUN] Would import to Mealie: {url}")
             return True, None
         
+        self.last_slug = None
         headers = {"Authorization": f"Bearer {MEALIE_API_TOKEN}"}
         
         # 1. Determine endpoints to try
@@ -559,6 +565,11 @@ class ImportManager:
 
                 if r.status_code in [200, 201]:
                     logger.info(f"   ✅ [Mealie] Imported: {url}")
+                    try:
+                        body = r.json()
+                        self.last_slug = body if isinstance(body, str) else body.get("slug")
+                    except Exception:
+                        self.last_slug = None
                     return True, None
                 elif r.status_code == 409:
                     logger.info(f"   ⚠️ [Mealie] Duplicate: {url}")
@@ -846,6 +857,8 @@ def main():
     logger.info(f"   Mode: {'DRY RUN' if DRY_RUN_MODE else 'LIVE IMPORT'}")
     logger.info(f"   Targets: {len(sites_list)} sites")
     logger.info(f"   Limit: {TARGET_COUNT} per site")
+    if categoriser.SET_CATEGORIES:
+        logger.info("   🏷️  Categorising imports by region and dish type")
     
     # Initialize components
     storage = StorageManager()
@@ -907,6 +920,10 @@ def main():
             
             if is_recipe:
                 if importer.import_recipe(url):
+                    if categoriser.SET_CATEGORIES and MEALIE_ENABLED and soup is not None:
+                        categoriser.apply_categories(
+                            session, MEALIE_URL, MEALIE_API_TOKEN,
+                            importer.last_slug, categoriser.categories_for(soup, url))
                     storage.add_imported(url)
                     imported_count += 1
                     site_stats['imported'] += 1

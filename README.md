@@ -23,6 +23,38 @@ This script automates the process of finding **new** recipes. It scans a curated
 * **Per-Site Statistics:** Tracks imported/rejected/error counts for each site processed.
 * **Progress Visualization:** Optional tqdm progress bars for long-running operations.
 
+## 🏷️ Recipe Categorisation (Optional, Mealie only)
+
+Sets each imported recipe's categories to its region of origin and what kind of
+dish it is, so a fresh import arrives sorted rather than as one undifferentiated
+heap. Off by default:
+
+```
+SET_CATEGORIES=true
+CUISINE_MIN_SCORE=2     # raise to be stricter about regions
+```
+
+Results look like *Indian + Curry + Main*, *Italian + Pasta + Main*, or just
+*Breakfast*.
+
+**Region** comes from the recipe's own `recipeCuisine` where the site publishes
+one, normalised so "Tex-Mex" lands on Mexican and "Sichuan" on Chinese, and
+non-regional values like "Vegan" or "Gluten Free" are ignored. Where it's
+missing — most of the time — it's inferred by scoring marker ingredients and
+title words. Distinctive markers (garam masala, gochujang, berbere,
+doubanjiang) carry the decision; generic ones (cilantro, lime, maple syrup)
+only break ties, so a kale salad doesn't become Mexican for having coriander in
+it. No signal means no category, never a guess.
+
+**Dish type** comes from the site's `recipeCategory` and `keywords` where
+present, otherwise the title and slug: Breakfast, Main, Side, Salad, Soup,
+Stew, Curry, Pasta, Rice, Noodles, Stir-fry, Sandwich, Burger, Pizza, Bowl,
+Bake, Bread, Snack, Dip, Sauce, Dressing, Dessert, Cake, Cookies and more. A
+recipe can hold several, capped at three — sweet things never also get Main,
+and dishes that are a meal in themselves pick it up automatically.
+
+Uses the page the verifier has already fetched, so it costs no extra requests.
+
 ## 📊 What's New in v1.0-beta.11
 
 ### Massive Content Expansion
